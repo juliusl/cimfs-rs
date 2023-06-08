@@ -1,8 +1,17 @@
-/// Module containing raw generated api's,
+mod image;
+mod object;
+
+/// Module contains wrapper-types that add convenience api's.
+/// 
+pub mod api {
+    pub use super::image::Image;
+    pub use super::object::Object;
+}
+
+/// Module contains raw generated api's as well as utiltiies for working with the os.
 ///
 pub mod raw {
     use std::ffi::c_ulong;
-
     pub use cimfs_sys::CimCloseImage;
     pub use cimfs_sys::CimCloseStream;
     pub use cimfs_sys::CimCommitImage;
@@ -18,6 +27,7 @@ pub mod raw {
     pub use cimfs_sys::CIMFS_IMAGE_HANDLE;
     pub use cimfs_sys::CIMFS_STREAM_HANDLE;
     pub use cimfs_sys::CIM_MOUNT_IMAGE_FLAGS;
+    pub use cimfs_sys::_GUID;
 
     use cimfs_sys::LARGE_INTEGER;
 
@@ -58,38 +68,50 @@ pub mod raw {
     }
 }
 
-mod image;
-pub use image::Image;
-
+/// Utilities for environment setup,
+/// 
 pub mod util {
-    use cimfs_sys::{TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY};
-    use windows::core::{Result, HSTRING};
-    use windows::Win32::Security::{
-        AdjustTokenPrivileges, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
-        SE_PRIVILEGE_ENABLED_BY_DEFAULT, TOKEN_ACCESS_MASK, TOKEN_PRIVILEGES,
-        TOKEN_PRIVILEGES_ATTRIBUTES,
-    };
-    use windows::Win32::{Foundation::HANDLE, System::Threading::*};
+    use cimfs_sys::TOKEN_QUERY;
+    use cimfs_sys::TOKEN_ADJUST_PRIVILEGES;
     use tracing::trace;
+    use windows::core::Result;
+    use windows::core::HSTRING;
+    use windows::Win32::Security::TOKEN_PRIVILEGES_ATTRIBUTES;
+    use windows::Win32::Security::TOKEN_PRIVILEGES;
+    use windows::Win32::Security::TOKEN_ACCESS_MASK;
+    use windows::Win32::Security::SE_PRIVILEGE_ENABLED_BY_DEFAULT;
+    use windows::Win32::Security::SE_PRIVILEGE_ENABLED;
+    use windows::Win32::Security::LookupPrivilegeValueW;
+    use windows::Win32::Security::AdjustTokenPrivileges;
+    use windows::Win32::System::Threading::*;
+    use windows::Win32::Foundation::HANDLE;
 
     /// Setup privileges,
-    /// 
+    ///
     pub fn setup_privileges() -> Result<()> {
-        use windows::Win32::Security::{SE_SECURITY_NAME, SE_BACKUP_NAME};
+        use windows::Win32::Security::SE_SECURITY_NAME;
+        use windows::Win32::Security::SE_BACKUP_NAME;
 
         unsafe {
-            
             let previous = toggle_privilege(SE_SECURITY_NAME.to_string()?, true)?;
-            trace!(previous, "toggled privilege {:?}", SE_SECURITY_NAME.to_string());
+            trace!(
+                previous,
+                "toggled privilege {:?}",
+                SE_SECURITY_NAME.to_string()
+            );
             let previous = toggle_privilege(SE_BACKUP_NAME.to_string()?, true)?;
-            trace!(previous, "toggled privilege {:?}", SE_BACKUP_NAME.to_string());
+            trace!(
+                previous,
+                "toggled privilege {:?}",
+                SE_BACKUP_NAME.to_string()
+            );
         }
 
         Ok(())
     }
 
     /// Toggles privileges,
-    /// 
+    ///
     pub unsafe fn toggle_privilege(name: impl AsRef<str>, enable: bool) -> Result<bool> {
         let mut token = HANDLE::default();
 
@@ -107,7 +129,8 @@ pub mod util {
             None,
             &HSTRING::from(name.as_ref()),
             std::ptr::addr_of_mut!(current_token_privileges.Privileges[0].Luid),
-        ).ok()?;
+        )
+        .ok()?;
 
         current_token_privileges.PrivilegeCount = 1;
         current_token_privileges.Privileges[0].Attributes = if enable {
@@ -130,9 +153,13 @@ pub mod util {
         trace!("current - {:?}", current_token_privileges);
         trace!("previous - {:?} {}", previous_token_privileges, bytes);
 
-        let previously_enabled: bool = (bytes == std::mem::size_of_val(&previous_token_privileges) as u32)
+        let previously_enabled: bool = (bytes
+            == std::mem::size_of_val(&previous_token_privileges) as u32)
             && (previous_token_privileges.PrivilegeCount == 1)
-            && (previous_token_privileges.Privileges[0].Attributes & (SE_PRIVILEGE_ENABLED | SE_PRIVILEGE_ENABLED_BY_DEFAULT)).0 != 0;
+            && (previous_token_privileges.Privileges[0].Attributes
+                & (SE_PRIVILEGE_ENABLED | SE_PRIVILEGE_ENABLED_BY_DEFAULT))
+                .0
+                != 0;
 
         Ok(previously_enabled)
     }
