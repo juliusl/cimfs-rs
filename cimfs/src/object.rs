@@ -1,11 +1,12 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::ffi::OsStr;
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::core::Error;
 use tracing::trace;
 
 /// Struct containing data on the object being added to a CIM image,
 ///
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub struct Object {
     /// Relative path to use in the CIM image,
     ///
@@ -25,43 +26,56 @@ impl Object {
         }
     }
 
-    /// Returns the relative path to use in the CIM image,
+    /// Resolves the relative path to use for this object, and returns a set of ancestors required to add this object,
     ///
     /// If the relative_path is not set, it will be interpreted from the src path.
     ///
-    /// If the src path starts with '.' or '..', it will be treated as the root ('\\').
-    ///
-    pub fn resolve_relative_path(&mut self) -> Result<(), Error> {
-        if !self.relative_path.as_os_str().is_empty() {
-            Ok(())
-        } else {
+    pub fn resolve_relative_path(&mut self, parse_ancestors: bool) -> Result<BTreeSet<Object>, Error> {
+        let mut ancestors = BTreeSet::new();
+        if self.relative_path.as_os_str().is_empty() {
             self.src
                 .canonicalize()
                 .map_err(|e| Error::new(E_INVALIDARG, format!("{e}").into()))?;
             let mut relative_path = PathBuf::new();
+            let mut components = self.src.components();
 
-            for c in self.src.components() {
+            // Extract the root
+            let root = if let Some(root) = components.next() {
+                match root {
+                    std::path::Component::Prefix(prefix) => prefix.as_os_str().into(),
+                    std::path::Component::RootDir => PathBuf::from("\\"),
+                    std::path::Component::CurDir => PathBuf::from("."),
+                    std::path::Component::ParentDir => PathBuf::from(".."),
+                    std::path::Component::Normal(n) => PathBuf::from(n),
+                }
+            } else {
+                PathBuf::from("")
+            };
+
+            if root.is_relative() {
+                relative_path = relative_path.join(&root);
+            }
+
+            for c in components {
                 trace!("{:?}", c);
                 match c {
                     std::path::Component::Prefix(prefix) => match prefix.kind() {
                         std::path::Prefix::Verbatim(p) => {
-                            relative_path = relative_path.join("\\").join(p);
+                            relative_path = relative_path.join(p);
                         }
                         std::path::Prefix::VerbatimUNC(_, share)
                         | std::path::Prefix::UNC(_, share) => {
-                            relative_path = relative_path.join("\\").join(share);
+                            relative_path = relative_path.join(share);
                         }
                         std::path::Prefix::VerbatimDisk(_)
                         | std::path::Prefix::DeviceNS(_)
                         | std::path::Prefix::Disk(_) => {
-                            relative_path = relative_path.join("\\");
                         }
                     },
                     // Treat all of these cases as a root path
                     std::path::Component::RootDir
                     | std::path::Component::CurDir
                     | std::path::Component::ParentDir => {
-                        relative_path = relative_path.join("\\");
                     }
                     std::path::Component::Normal(p) => {
                         relative_path = relative_path.join(p);
@@ -70,22 +84,36 @@ impl Object {
             }
 
             self.relative_path = relative_path;
-            Ok(())
+            if parse_ancestors {
+                trace!("Parsing ancestors -- {:?}", root);
+                for a in self.relative_path.ancestors() {
+                    trace!("ancestor -- {:?}", a);
+                    if !a.exists() || a.is_file() {
+                        continue;
+                    }
+
+                    let mut a = Object::new(a);
+                    a.resolve_relative_path(false)?;
+                    ancestors.insert(a);
+                }
+            }
         }
+
+        Ok(ancestors)
     }
 
     /// Returns a result containing the relative path to use in the cim for this object,
     ///
     /// If the resolve_relative_path() hasn't been called yet, this function will retrun an error.
     ///
-    pub fn get_relative_path(&self) -> Result<&OsStr, Error> {
+    pub fn get_relative_path(&self) -> Result<&PathBuf, Error> {
         if self.relative_path.as_os_str().is_empty() {
             Err(Error::new(
                 E_INVALIDARG,
                 "Object's relative path hasn't been resolved".into(),
             ))
         } else {
-            Ok(self.relative_path.as_os_str())
+            Ok(&self.relative_path)
         }
     }
 
@@ -95,5 +123,18 @@ impl Object {
         self.src
             .canonicalize()
             .map_err(|e| Error::new(E_INVALIDARG, format!("{e}").into()))
+    }
+}
+
+#[allow(unused_imports)]
+mod tests {
+    use super::Object;
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_resolve() {
+        let mut t = Object::new("src/bin/cimutil.rs");
+
+        let ancestors = t.resolve_relative_path(true);
+        println!("{:#?}", ancestors);
     }
 }

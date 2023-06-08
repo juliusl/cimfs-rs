@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::c_ulong;
 use std::ffi::c_void;
 use std::ffi::OsStr;
@@ -9,11 +10,11 @@ use cimfs_sys::CimMountImage;
 use cimfs_sys::CIM_MOUNT_IMAGE_FLAGS_CIM_MOUNT_IMAGE_NONE;
 use cimfs_sys::_GUID;
 use windows::core::Error;
-use windows::core::PCWSTR;
 use windows::core::Result;
 use windows::core::GUID;
 use windows::core::HRESULT;
 use windows::core::HSTRING;
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::CreateFileW;
 use windows::Win32::Storage::FileSystem::*;
@@ -30,6 +31,7 @@ use windows::Win32::System::IO::DeviceIoControl;
 // use windows::Win32::Security::DACL_SECURITY_INFORMATION;
 // use windows::Win32::Security::*;
 
+use crate::object::Object;
 use crate::raw::CIMFS_IMAGE_HANDLE;
 use crate::raw::FSCTL_GET_REPARSE_POINT;
 
@@ -65,10 +67,38 @@ impl Image {
     }
 
     /// Sets the volume id, chainable
-    /// 
+    ///
     pub fn with_volume(mut self, volume: GUID) -> Self {
         self.volume = Some(volume);
         self
+    }
+
+    /// Builds the image from a list of objects and a set of their ancestors,
+    /// 
+    pub fn build(&mut self, objects: Vec<Object>, ancestors: BTreeSet<Object>) -> Result<()> {
+        // Create ancestors
+        for a in ancestors.iter() {
+            let relative_path = a.get_relative_path()?;
+            let src_path = a.get_src_path()?;
+            trace!("Creating ancestor {:?}", a);
+            self.create_file(relative_path.as_os_str(), src_path.as_os_str())?;
+        }
+
+        // Create objects
+        for o in objects {
+            let relative_path = o.get_relative_path()?;
+            if ancestors.contains(&o) {
+                trace!("Skipping {:?}, included in ancestors", relative_path);
+                continue;
+            }
+
+            let src_path = o.get_src_path()?;
+
+            trace!("Creating file at {:?} w/ src {:?}", relative_path, src_path);
+            self.create_file(relative_path.as_os_str(), src_path.as_os_str())?;
+        }
+
+        Ok(())
     }
 
     /// Creates the current image,
@@ -365,7 +395,7 @@ impl Image {
     }
 
     /// Sets the mountpoint for the mounted volume,
-    /// 
+    ///
     /// Returns an error if mount() was not called in the same process or with_volume() was not used.
     ///
     pub fn mount_volume(&self, mountpoint: impl Into<PathBuf>) -> Result<()> {
@@ -379,19 +409,15 @@ impl Image {
 
                 let mountpoint = HSTRING::from(mountpoint.as_os_str());
                 let volume_path = HSTRING::from(volume_path);
-                
-                trace!("Trying to set mountpoint {} for {}", mountpoint.to_string(), volume_path.to_string());
-                let mut mountpoint_term: Vec<u16> = vec![0; mountpoint.as_wide().len() + 1];
-                mountpoint_term[..mountpoint.as_wide().len()].copy_from_slice(mountpoint.as_wide());
-                mountpoint_term.push(0);
 
-                let mut volume_path_term: Vec<u16> = vec![0; volume_path.as_wide().len() + 1];
-                volume_path_term[..volume_path.as_wide().len()].copy_from_slice(volume_path.as_wide());
-                volume_path_term.push(0);
-
+                trace!(
+                    "Trying to set mountpoint {} for {}",
+                    mountpoint.to_string(),
+                    volume_path.to_string()
+                );
                 SetVolumeMountPointW(
-                    PCWSTR(mountpoint_term.as_ptr()),
-                    PCWSTR(volume_path_term.as_ptr()),
+                    PCWSTR(mountpoint.as_ptr()),
+                    PCWSTR(volume_path.as_ptr()),
                 )
                 .ok()?;
             }
@@ -403,7 +429,7 @@ impl Image {
     }
 }
 
-/// Wrapper struct over the image handle so that it can be dropped in the case an error is returned while the handle is in-use
+/// Wrapper struct over the image handle so that the image can be closed when this struct is dropped,
 ///
 #[derive(Debug)]
 struct CimImageHandleWrapper {

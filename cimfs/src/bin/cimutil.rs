@@ -1,6 +1,7 @@
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use tracing::error;
 use tracing::info;
@@ -15,8 +16,8 @@ use windows::core::HSTRING;
 use windows::Win32::Foundation::E_INVALIDARG;
 
 use cimfs::api::*;
-use cimfs::raw::_GUID;
 use cimfs::raw::CimDismountImage;
+use cimfs::raw::_GUID;
 
 /// Command line utility to work with CimFS on Windows
 ///
@@ -71,16 +72,17 @@ struct NewCimArgs {
     name: String,
     /// List of paths of objects to add to the new cim image,
     ///
-    /// Objects can be:
-    /// - Files
-    /// - Directories
+    /// Objects can be either files or directores (read further on information on directories)
     ///
     /// The relative path in the image will be the relative path passed to this command. However, a path must be able to be canonicalized.
     ///
     /// For example,
     ///
-    /// Passing `../src/file.txt` will be available in the cim image as `src/file.txt` however,
+    /// Passing `../src/file.txt` will be available in the cim image as `src\file.txt` however,
     /// before the file is queued the `..` will be expanded to a fully qualified path and if unsuccessful this command will fail.
+    ///
+    /// This command will also handle adding ancestors for a file. For example if `src\bin\main.rs` is passed,
+    /// `src`, `src\bin` will be created before `src\bin\main.rs` is added.
     ///
     objects: Vec<String>,
 }
@@ -105,16 +107,17 @@ struct ForkCimArgs {
     to: String,
     /// List of paths of objects to add to the new cim image, if a file existed in the previous image that file will be overwritten.
     ///
-    /// Objects can be:
-    /// - Files
-    /// - Directories
+    /// Objects can be either files or directores (read further on information on directories)
     ///
     /// The relative path in the image will be the relative path passed to this command. However, a path must be able to be canonicalized.
     ///
     /// For example,
     ///
-    /// Passing `../src/file.txt` will be available in the cim image as `src/file.txt` however,
+    /// Passing `../src/file.txt` will be available in the cim image as `src\file.txt` however,
     /// before the file is queued the `..` will be expanded to a fully qualified path and if unsuccessful this command will fail.
+    ///
+    /// This command will also handle adding ancestors for a file. For example if `src\bin\main.rs` is passed,
+    /// `src`, `src\bin` will be created before `src\bin\main.rs` is added.
     ///
     objects: Vec<String>,
 }
@@ -130,13 +133,13 @@ struct MountCimArgs {
     #[arg(long, short)]
     volume: Option<String>,
     /// (Optional) Path to mount the volume after it is created,
-    /// 
+    ///
     /// See the `mountvol` windows command for restrictions.
-    /// 
-    /// A trailing slash will be added if one was not already added. 
-    /// 
+    ///
+    /// A trailing slash will be added if one was not already added.
+    ///
     /// **NOTE** If the path is occupied, setting the mount point will fail, but the volume will still be mounted.
-    /// 
+    ///
     #[arg(long, short)]
     mountvol: Option<String>,
     /// Image name to mount, ex. image.cim
@@ -152,11 +155,16 @@ struct MountCimArgs {
 struct DismountCimArgs {
     /// Volume of the CimFS to dismount,
     ///
-    /// Input can be in the following formats,
-    /// - Volume{04522dcd-f383-4f1c-aea6-af8f93e020d5} 
+    /// Input can be one of the following formats,
+    ///
+    /// - Volume{04522dcd-f383-4f1c-aea6-af8f93e020d5}
+    ///
     /// - {04522dcd-f383-4f1c-aea6-af8f93e020d5}
+    ///
     /// - 04522dcd-f383-4f1c-aea6-af8f93e020d5
-    /// 
+    ///
+    /// - \\?\Volume{8F873B24-4F07-4A68-848D-CB0AE0242316}
+    ///
     volume: String,
 }
 
@@ -189,7 +197,6 @@ fn main() -> Result<()> {
         })?;
     }
 
-
     match parser.command {
         CimFSCommands::New(args) => {
             // Setup arguments before starting anything
@@ -200,22 +207,18 @@ fn main() -> Result<()> {
 
             trace!("Parsing objects to add");
             // TODO: Add a way to add this from a file schema, oci-manifest, tar, etc.
-            let objects = parse_objects_from_args(args.objects)?;
+            let (objects, ancestors) = parse_objects_from_args(args.objects)?;
 
-            info!("Creating new CIM at: {:?}", root.join(&name));
+            trace!("Creating new CIM at: {:?}", root.join(&name));
             let mut image = Image::new(root, name);
 
+            info!("Creating image handle");
             image.create(None)?;
 
-            for o in objects {
-                let relative_path = o.get_relative_path()?;
-                let src_path = o.get_src_path()?;
+            info!("Building image");
+            image.build(objects, ancestors)?;
 
-                info!("Creating file at {:?} w/ src {:?}", relative_path, src_path);
-                image.create_file(relative_path, src_path.as_os_str())?;
-            }
-
-            info!("Committing CIM image");
+            info!("Committing image");
             image.commit()?;
         }
         CimFSCommands::Fork(args) => {
@@ -232,26 +235,22 @@ fn main() -> Result<()> {
 
             trace!("Parsing objects to add");
             // TODO: Add a way to add this from a file schema, oci-manifest, tar, etc.
-            let objects = parse_objects_from_args(args.objects)?;
+            let (objects, ancestors) = parse_objects_from_args(args.objects)?;
 
-            info!(
+            trace!(
                 "Creating new CIM at {:?} from {:?}",
                 root.join(&to),
                 root.join(&from)
             );
-            let mut image = Image::new(root, to);
 
+            let mut image = Image::new(root, to);
+            info!("Creating image handle");
             image.create(Some(from.as_str()))?;
 
-            for o in objects {
-                let relative_path = o.get_relative_path()?;
-                let src_path = o.get_src_path()?;
+            info!("Building image fork");
+            image.build(objects, ancestors)?;
 
-                info!("Creating file at {:?} w/ src {:?}", relative_path, src_path);
-                image.create_file(relative_path, src_path.as_os_str())?;
-            }
-
-            info!("Committing CIM image");
+            info!("Committing image");
             image.commit()?;
         }
         CimFSCommands::Mount(args) => {
@@ -276,7 +275,14 @@ fn main() -> Result<()> {
             }
         }
         CimFSCommands::Dismount(args) => unsafe {
-            let volume = args.volume.as_str().trim_start_matches("Volume{").trim_start_matches("{").trim_end_matches("}");
+            // Sanitize the arguments
+            let volume = args
+                .volume
+                .as_str()
+                .trim_start_matches("\\\\?\\")
+                .trim_start_matches("Volume{")
+                .trim_start_matches("{")
+                .trim_end_matches("}");
             let volume = GUID::try_from(volume)
                 .map_err(|_| Error::new(E_INVALIDARG, "Invalid GUID".into()))?;
             HRESULT(CimDismountImage(std::ptr::addr_of!(volume) as *const _GUID)).ok()?;
@@ -286,16 +292,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Parses a list of object paths into Object structs,
-///
-fn parse_objects_from_args(list: Vec<String>) -> Result<Vec<Object>> {
+/// Parses a list of object paths into a vector of objects and their required ancestors,
+/// 
+fn parse_objects_from_args(list: Vec<String>) -> Result<(Vec<Object>, BTreeSet<Object>)> {
     let mut objects = vec![];
+
+    let mut ancestors = BTreeSet::new();
+
     for o in list {
         let mut o = Object::new(o);
-        o.resolve_relative_path()?;
+        let mut a = o.resolve_relative_path(true)?;
+        ancestors.append(&mut a);
         objects.push(o);
     }
-    Ok(objects)
+
+    Ok((objects, ancestors))
 }
 
 /// Enable and initialize logging
