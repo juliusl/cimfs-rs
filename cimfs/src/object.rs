@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use windows::Win32::Foundation::E_INVALIDARG;
-use windows::core::Error;
 use tracing::trace;
+use windows::core::Error;
+use windows::Win32::Foundation::E_INVALIDARG;
 
 /// Struct containing data on the object being added to a CIM image,
 ///
@@ -30,13 +30,18 @@ impl Object {
     ///
     /// If the relative_path is not set, it will be interpreted from the src path.
     ///
-    pub fn resolve_relative_path(&mut self, parse_ancestors: bool) -> Result<BTreeSet<Object>, Error> {
+    pub fn resolve_relative_path(
+        &mut self,
+        parse_ancestors: bool,
+    ) -> Result<BTreeSet<Object>, Error> {
         let mut ancestors = BTreeSet::new();
         if self.relative_path.as_os_str().is_empty() {
             self.src
                 .canonicalize()
-                .map_err(|e| Error::new(E_INVALIDARG, format!("{e}").into()))?;
+                .map_err(|e| Error::new(E_INVALIDARG, format!("{e} -- {:?}", self.src).into()))?;
             let mut relative_path = PathBuf::new();
+
+            let mut root = None::<PathBuf>;
 
             for c in self.src.components() {
                 trace!("{:?}", c);
@@ -52,12 +57,20 @@ impl Object {
                         std::path::Prefix::VerbatimDisk(_)
                         | std::path::Prefix::DeviceNS(_)
                         | std::path::Prefix::Disk(_) => {
+                            root = Some(PathBuf::from(prefix.as_os_str()));
                         }
                     },
                     // Treat all of these cases as a root path
-                    std::path::Component::RootDir
-                    | std::path::Component::CurDir
+                    std::path::Component::RootDir => {
+                        root = Some(PathBuf::from(c.as_os_str()));
+                    }
+                    std::path::Component::CurDir
                     | std::path::Component::ParentDir => {
+                        if let Some(root) = root.as_mut() {
+                            *root = root.join(c.as_os_str());
+                        } else {
+                            root = Some(PathBuf::from(c.as_os_str()));
+                        }
                     }
                     std::path::Component::Normal(p) => {
                         relative_path = relative_path.join(p);
@@ -67,13 +80,14 @@ impl Object {
 
             self.relative_path = relative_path;
             if parse_ancestors {
-                for a in self.relative_path.ancestors() {
+                let src = root.take().unwrap_or(PathBuf::new());
+                for a in self.relative_path.ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()) {
                     trace!("ancestor -- {:?}", a);
-                    if !a.exists() || a.is_file() {
-                        continue;
+                    if a.is_file() {
+                        break;
                     }
 
-                    let mut a = Object::new(a);
+                    let mut a = Object::new(src.join(a));
                     a.resolve_relative_path(false)?;
                     ancestors.insert(a);
                 }
