@@ -37,26 +37,8 @@ impl Object {
                 .canonicalize()
                 .map_err(|e| Error::new(E_INVALIDARG, format!("{e}").into()))?;
             let mut relative_path = PathBuf::new();
-            let mut components = self.src.components();
 
-            // Extract the root
-            let root = if let Some(root) = components.next() {
-                match root {
-                    std::path::Component::Prefix(prefix) => prefix.as_os_str().into(),
-                    std::path::Component::RootDir => PathBuf::from("\\"),
-                    std::path::Component::CurDir => PathBuf::from("."),
-                    std::path::Component::ParentDir => PathBuf::from(".."),
-                    std::path::Component::Normal(n) => PathBuf::from(n),
-                }
-            } else {
-                PathBuf::from("")
-            };
-
-            if root.is_relative() {
-                relative_path = relative_path.join(&root);
-            }
-
-            for c in components {
+            for c in self.src.components() {
                 trace!("{:?}", c);
                 match c {
                     std::path::Component::Prefix(prefix) => match prefix.kind() {
@@ -85,7 +67,6 @@ impl Object {
 
             self.relative_path = relative_path;
             if parse_ancestors {
-                trace!("Parsing ancestors -- {:?}", root);
                 for a in self.relative_path.ancestors() {
                     trace!("ancestor -- {:?}", a);
                     if !a.exists() || a.is_file() {
