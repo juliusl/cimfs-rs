@@ -34,7 +34,6 @@ struct CimUtil {
     ///
     #[arg(long, default_value_t=String::from("."))]
     root: String,
-
     #[command(subcommand)]
     command: CimFSCommands,
 }
@@ -70,6 +69,10 @@ struct NewCimArgs {
     ///
     #[arg(long, short)]
     name: String,
+    /// Sets the default max buffer len to use when copying files to the cim,
+    /// 
+    #[arg(long)]
+    transfer_buffer_len: Option<usize>,
     /// List of paths of objects to add to the new cim image,
     ///
     /// Objects can be either files or directores (read further on information on directories)
@@ -105,6 +108,10 @@ struct ForkCimArgs {
     ///
     #[arg(long, short)]
     to: String,
+    /// Sets the default max buffer len to use when copying files to the cim,
+    /// 
+    #[arg(long)]
+    transfer_buffer_len: Option<usize>,
     /// List of paths of objects to add to the new cim image, if a file existed in the previous image that file will be overwritten.
     ///
     /// Objects can be either files or directores (read further on information on directories)
@@ -212,6 +219,10 @@ fn main() -> Result<()> {
             trace!("Creating new CIM at: {:?}", root.join(&name));
             let mut image = Image::new(root, name);
 
+            if let Some(buf_len) = args.transfer_buffer_len {
+                image = image.with_transfer_buf_len(buf_len);
+            }
+
             info!("Creating image handle");
             image.create(None)?;
 
@@ -244,6 +255,11 @@ fn main() -> Result<()> {
             );
 
             let mut image = Image::new(root, to);
+            
+            if let Some(buf_len) = args.transfer_buffer_len {
+                image = image.with_transfer_buf_len(buf_len);
+            }
+
             info!("Creating image handle");
             image.create(Some(from.as_str()))?;
 

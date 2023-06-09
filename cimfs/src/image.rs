@@ -52,6 +52,13 @@ pub struct Image {
     /// Volume id,
     ///
     volume: Option<GUID>,
+    /// Max buffer len to use when transfering files,
+    /// 
+    _max_buffer_len: usize,
+}
+
+impl Image {
+
 }
 
 impl Image {
@@ -63,6 +70,21 @@ impl Image {
             root_folder: root_folder.into(),
             image_handle: None,
             volume: None,
+            _max_buffer_len: 20971520 // 20 MiB
+        }
+    }
+
+    /// Returns self w/ a different buffer length for streaming,
+    /// 
+    /// The default is 20 MiB.
+    /// 
+    pub fn with_transfer_buf_len(self, len: usize) -> Image {
+        Image {
+            name: self.name,
+            root_folder: self.root_folder,
+            image_handle: self.image_handle,
+            volume: self.volume,
+            _max_buffer_len: len,
         }
     }
 
@@ -74,7 +96,7 @@ impl Image {
     }
 
     /// Builds the image from a list of objects and a set of their ancestors,
-    /// 
+    ///
     pub fn build(&mut self, objects: Vec<Object>, ancestors: BTreeSet<Object>) -> Result<()> {
         // Create ancestors
         for a in ancestors.iter() {
@@ -287,8 +309,8 @@ impl Image {
 
                 result.ok()?;
 
-                let mut buffer = BytesMut::with_capacity(65536);
-                buffer.set_len(65536);
+                let mut buffer = BytesMut::with_capacity(self._max_buffer_len);
+                buffer.set_len(self._max_buffer_len);
 
                 if !is_dir {
                     trace!("Starting read");
@@ -313,14 +335,12 @@ impl Image {
                         ))
                         .ok()?;
 
-                        trace!("Read {read} bytes to buffer");
                         if read == 0 {
                             break;
                         }
-
-                        trace!("Wrote to stream");
+                        trace!("{} of {} bytes transferred", total, metadata.FileSize);
                         buffer.truncate(0);
-                        buffer.set_len(65536);
+                        buffer.set_len(self._max_buffer_len);
                     }
                     trace!("Closing stream - total written {}", total);
                 }
@@ -415,11 +435,8 @@ impl Image {
                     mountpoint.to_string(),
                     volume_path.to_string()
                 );
-                SetVolumeMountPointW(
-                    PCWSTR(mountpoint.as_ptr()),
-                    PCWSTR(volume_path.as_ptr()),
-                )
-                .ok()?;
+                SetVolumeMountPointW(PCWSTR(mountpoint.as_ptr()), PCWSTR(volume_path.as_ptr()))
+                    .ok()?;
             }
 
             Ok(())
