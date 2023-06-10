@@ -3,7 +3,9 @@ name: Rust-Binary-Build
 on:
   push:
     branches: [ "main", "release" ]
-    tags: v*
+    tags:
+    - v*
+    - release/*
 env:
   CARGO_TERM_COLOR: always
 
